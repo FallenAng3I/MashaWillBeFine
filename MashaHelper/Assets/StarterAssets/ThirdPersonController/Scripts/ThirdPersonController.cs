@@ -83,6 +83,8 @@ namespace StarterAssets
         private float _speed;
         private float _animationBlend;
         private float _targetRotation = 0.0f;
+        private float _mouseX;
+        private float _rotationSpeed = 450.0f;
         private float _rotationVelocity;
         private float _verticalVelocity;
         private float _terminalVelocity = 53.0f;
@@ -121,8 +123,7 @@ namespace StarterAssets
 #endif
             }
         }
-
-
+        
         private void Awake()
         {
             // get a reference to our main camera
@@ -159,6 +160,18 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
             Move();
+            
+            CameraRotation(); // Обновить логику поворота камеры
+
+            // Перемещение влево или вправо
+            float moveDirection = 0;
+            if (Input.GetKey(KeyCode.A))
+                moveDirection = -1;
+            else if (Input.GetKey(KeyCode.D))
+                moveDirection = 1;
+
+            Vector3 move = transform.right * (moveDirection * _speed * Time.deltaTime);
+            transform.Translate(move);
         }
 
         private void LateUpdate()
@@ -192,52 +205,42 @@ namespace StarterAssets
 
         private void CameraRotation()
         {
-            // if there is an input and camera position is not fixed
-            if (_input.look.sqrMagnitude >= _threshold && !LockCameraPosition)
-            {
-                //Don't multiply mouse input by Time.deltaTime;
-                float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
+            // Получаем движение мыши по горизонтали
+            _mouseX = _input.look.x;
 
-                _cinemachineTargetYaw += _input.look.x * deltaTimeMultiplier;
-                _cinemachineTargetPitch += _input.look.y * deltaTimeMultiplier;
+            // Если движение мыши есть и камера не фиксирована
+            if (_mouseX != 0 && !LockCameraPosition)
+            {
+                // Обновляем угол камеры
+                _cinemachineTargetYaw += _mouseX * _rotationSpeed * Time.deltaTime;
+                _cinemachineTargetYaw = ClampAngle(_cinemachineTargetYaw, -360, 360); // Классыем угол камеры
             }
 
-            // clamp our rotations so our values are limited 360 degrees
-            _cinemachineTargetYaw = ClampAngle(_cinemachineTargetYaw, float.MinValue, float.MaxValue);
-            _cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
-
-            // Cinemachine will follow this target
-            CinemachineCameraTarget.transform.rotation = Quaternion.Euler(_cinemachineTargetPitch + CameraAngleOverride,
-                _cinemachineTargetYaw, 0.0f);
+            // Вращаем персонажа на основе угла камеры
+            float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _cinemachineTargetYaw, ref _rotationVelocity, RotationSmoothTime);
+            transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
         }
+
 
         private void Move()
         {
-            // set target speed based on move speed, sprint speed and if sprint is pressed
+            // Установить целевую скорость на основе состояния спринта
             float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
 
-            // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
-
-            // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-            // if there is no input, set the target speed to 0
+            // Если нет входного сигнала, установить целевую скорость в 0
             if (_input.move == Vector2.zero) targetSpeed = 0.0f;
 
-            // a reference to the players current horizontal velocity
+            // Определение текущей горизонтальной скорости
             float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
             float speedOffset = 0.1f;
             float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
 
-            // accelerate or decelerate to target speed
+            // Плавное увеличение или уменьшение скорости до целевого значения
             if (currentHorizontalSpeed < targetSpeed - speedOffset ||
                 currentHorizontalSpeed > targetSpeed + speedOffset)
             {
-                // creates curved result rather than a linear one giving a more organic speed change
-                // note T in Lerp is clamped, so we don't need to clamp our speed
-                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
-                    Time.deltaTime * SpeedChangeRate);
-
-                // round speed to 3 decimal places
+                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
                 _speed = Mathf.Round(_speed * 1000f) / 1000f;
             }
             else
@@ -248,30 +251,25 @@ namespace StarterAssets
             _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * SpeedChangeRate);
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
-            // normalise input direction
-            Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
+            // Направление движения относительно камеры
+            Vector3 forward = _mainCamera.transform.forward;
+            Vector3 right = _mainCamera.transform.right;
 
-            // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-            // if there is a move input rotate player when the player is moving
-            if (_input.move != Vector2.zero)
-            {
-                _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
-                                  _mainCamera.transform.eulerAngles.y;
-                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _targetRotation, ref _rotationVelocity,
-                    RotationSmoothTime);
+            // Убираем влияние высоты из векторов направления
+            forward.y = 0f;
+            right.y = 0f;
 
-                // rotate to face input direction relative to camera position
-                transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
-            }
+            forward.Normalize();
+            right.Normalize();
 
+            // Рассчитываем направление движения на основе входных данных
+            Vector3 moveDirection = forward * _input.move.y + right * _input.move.x;
 
-            Vector3 targetDirection = Quaternion.Euler(0.0f, _targetRotation, 0.0f) * Vector3.forward;
-
-            // move the player
-            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) +
+            // Перемещение персонажа
+            _controller.Move(moveDirection.normalized * (_speed * Time.deltaTime) +
                              new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
-            // update animator if using character
+            // Обновление анимаций
             if (_hasAnimator)
             {
                 _animator.SetFloat(_animIDSpeed, _animationBlend);
